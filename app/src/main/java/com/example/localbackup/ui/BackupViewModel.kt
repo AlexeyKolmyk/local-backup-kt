@@ -10,6 +10,7 @@ import com.example.localbackup.LocalBackupApplication
 import com.example.localbackup.backup.BatchStore
 import com.example.localbackup.backup.CreateBackupUseCase
 import com.example.localbackup.model.BackupBatch
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -31,6 +32,7 @@ sealed interface StoredBatchState {
 }
 
 data class BackupUiState(
+    /** Loading until startup reconciliation has finished, so a stale IN_PROGRESS is never shown. */
     val stored: StoredBatchState = StoredBatchState.Loading,
     val isRunning: Boolean = false,
     val errorMessage: String? = null
@@ -43,13 +45,16 @@ data class BackupUiState(
 /**
  * Owns the single active backup job and blocks concurrent starts.
  * The per-file loop lives in [CreateBackupUseCase]; status comes from the persisted [BatchStore].
+ * New backups are enabled only after [startupReconciliation] has finished.
  */
 class BackupViewModel(
     private val createBackup: CreateBackupUseCase,
-    batchStore: BatchStore
+    batchStore: BatchStore,
+    startupReconciliation: Deferred<Result<Unit>>
 ) : ViewModel() {
 
     private var activeJob: Job? = null
+    private val isReady = MutableStateFlow(false)
     private val isRunning = MutableStateFlow(false)
     private val errorMessage = MutableStateFlow<String?>(null)
 
@@ -59,12 +64,25 @@ class BackupViewModel(
         .catch { e -> emit(StoredBatchState.Error("Saved backup status cannot be read (${e::class.java.simpleName})")) }
 
     val uiState: StateFlow<BackupUiState> =
-        combine(stored, isRunning, errorMessage) { storedState, running, error ->
-            BackupUiState(stored = storedState, isRunning = running, errorMessage = error)
+        combine(stored, isReady, isRunning, errorMessage) { storedState, ready, running, error ->
+            BackupUiState(
+                stored = if (ready) storedState else StoredBatchState.Loading,
+                isRunning = running,
+                errorMessage = error
+            )
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), BackupUiState())
 
+    init {
+        viewModelScope.launch {
+            startupReconciliation.await().onFailure { e ->
+                errorMessage.value = "Previous backup could not be checked (${e::class.java.simpleName})"
+            }
+            isReady.value = true
+        }
+    }
+
     fun onFilesSelected(uris: List<Uri>) {
-        if (uris.isEmpty()) return
+        if (uris.isEmpty() || !isReady.value) return
         if (activeJob?.isActive == true) return // duplicate-start guard
 
         errorMessage.value = null
@@ -86,7 +104,7 @@ class BackupViewModel(
         val Factory = viewModelFactory {
             initializer {
                 val container = (this[APPLICATION_KEY] as LocalBackupApplication).container
-                BackupViewModel(container.createBackup, container.batchStore)
+                BackupViewModel(container.createBackup, container.batchStore, container.startupReconciliation)
             }
         }
     }

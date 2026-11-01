@@ -25,3 +25,12 @@ interface BackupCopier {
         onProgress: ((copiedBytes: Long) -> Unit)? = null
     ): Long
 }
+
+/** Read-only checks and partial cleanup used by startup reconciliation. */
+interface DestinationProbe {
+    /** Size of the finalized destination file, or null if it does not exist. */
+    suspend fun finalizedSize(destinationUri: String): Long?
+
+    /** Deletes the adjacent `.partial` file if present. Returns false if it could not be removed. */
+    suspend fun deletePartial(destinationUri: String): Boolean
+}

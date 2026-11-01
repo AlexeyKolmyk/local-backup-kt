@@ -4,35 +4,34 @@ This is a **short handoff for the next AI session**, not a historical log or dup
 
 ## Current step
 
-- Step: 04 — Typed DataStore and latest batch
+- Step: 05 — Recovery / reconciliation on startup
 - Status: Completed, developer-verified
-- Next: Step 05 — `ReconcileBackupUseCase` on startup for unfinished `IN_PROGRESS` batches (step file to be added by the developer)
+- Next: Step 06 (step file to be added by the developer)
 - Actual exercise time elapsed: Not recorded yet
 
 ## Implemented
 
 - Step 01: serialization setup, `model/BackupModels.kt`, basic screen.
 - Step 02: `copy/StreamCopy.kt` (`COPY_BUFFER_SIZE = 256 * 1024`), `copy/FileCopier.kt` (`.partial` -> fsync -> rename, cleanup on failure/cancellation), `copy/BackupStorage.kt` (`filesDir/backups/<batchId>/<fileId>_<safeName>`).
-- Step 03: `backup/CreateBackupUseCase.kt` (sequential `PENDING -> COPYING -> SUCCESS/FAILED`, awaited saves, `CancellationException` rethrown, `COMPLETED` after all attempts), port interfaces in `backup/BackupPorts.kt`, `copy/AppPrivateBackupFiles.kt`, `ui/BackupViewModel.kt` (single job, duplicate-start guard), `LocalBackupApplication` + `AppContainer` manual wiring.
-- Step 04: `androidx.datastore:datastore` 1.1.7; `data/LatestBatchRecord.kt` (`LatestBatchRecord(latestBatch: BackupBatch? = null)` + JSON `LatestBatchSerializer`, malformed data -> `CorruptionException`); `data/DataStoreBatchStore.kt` (`updateData` transforms current value); single DataStore instance in `AppContainer` (`files/datastore/latest_batch.json`).
-- UI: `StoredBatchState` Loading / Empty / Loaded / Error; Select disabled while loading, running, or on read error.
-- `InMemoryBatchStore` now exists only as a test fake.
+- Step 03: `backup/CreateBackupUseCase.kt` (sequential `PENDING -> COPYING -> SUCCESS/FAILED`, awaited saves, `CancellationException` rethrown, `COMPLETED` after all attempts), ports in `backup/BackupPorts.kt`, `copy/AppPrivateBackupFiles.kt`, `ui/BackupViewModel.kt` (single job, duplicate-start guard), `LocalBackupApplication` + `AppContainer` manual wiring.
+- Step 04: `androidx.datastore:datastore` 1.1.7; `data/LatestBatchRecord.kt` + JSON `LatestBatchSerializer` (malformed -> `CorruptionException`); `data/DataStoreBatchStore.kt`; single DataStore instance; UI `StoredBatchState` Loading / Empty / Loaded / Error.
+- Step 05: `backup/ReconcileBackupUseCase.kt` (only `IN_PROGRESS` batches; SUCCESS/FAILED preserved; PENDING/COPYING -> `.partial` deleted best effort, then INTERRUPTED unless finalized file size == known `expectedSize` -> SUCCESS; batch COMPLETED only if all SUCCESS/FAILED, else INTERRUPTED; probe errors -> INTERRUPTED). `DestinationProbe` port implemented by `AppPrivateBackupFiles`. `AppContainer.startupReconciliation` lazy `Deferred` in app scope = once per process; ViewModel shows Loading and keeps Select disabled until it finishes.
 - `backups/` and `datastore/latest_batch.json` excluded from Auto Backup / device transfer.
-- Tests: `StreamCopyTest` (4), `CreateBackupUseCaseTest` (4), `LatestBatchSerializerTest` (3: round trip with SUCCESS/FAILED, empty round trip, malformed -> `CorruptionException`).
+- Tests: `StreamCopyTest` (4), `CreateBackupUseCaseTest` (4), `LatestBatchSerializerTest` (3), `ReconcileBackupUseCaseTest` (7).
 
 ## Developer-verified checks
 
 - Build: Succeeded (developer-reported)
 - App launch: Launches on emulator (developer-reported)
-- Manual behavior: Fresh install shows Empty; batch and statuses survive force-stop/relaunch; new batch replaces previous; corrupted metadata file shows read error instead of Empty — "everything works as expected" (developer-reported)
-- Unit tests: `./gradlew testDebugUnitTest` BUILD SUCCESSFUL (developer-reported)
+- Manual behavior: 3-file batch force-stopped ~2 s after start; after relaunch batch shows `INTERRUPTED`, all three files `INTERRUPTED` with "Interrupted before completion", Select enabled; no `.partial` files in `files/backups` (developer-reported, screenshot + `adb` output). Second run (kill after ~4 s): `docs_ukr.pdf` SUCCESS preserved, `share.mp4` and `large_test.bin` INTERRUPTED, batch `INTERRUPTED` (developer screenshot).
+- Unit tests: `./gradlew testDebugUnitTest` passed (developer-reported)
 
 ## Known issues / deviations
 
-- Killing the app mid-copy leaves the persisted batch `IN_PROGRESS`/`COPYING` until Step 05 reconciliation.
+- Back button mid-copy finishes the activity -> ViewModel job cancelled while the process lives; reconciliation already ran in this process, so the batch stays `IN_PROGRESS`/`COPYING` until the next process start. Planned fix: record unfinished items in a short `NonCancellable` block on cancellation (together with optional Cancel).
 - Store property named `latestBatch` (step text says `lastBatch`).
 - Corrupted metadata requires clearing app data to recover (no reset action in UI).
-- Old batch folders are not cleaned up (by design; future work).
+- Old batch folders / orphaned copies are not cleaned up (by design; future work).
 
 ## Before committing each step (developer only)
 
