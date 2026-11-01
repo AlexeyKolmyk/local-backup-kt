@@ -4,6 +4,9 @@ import com.example.localbackup.model.BackupBatch
 import com.example.localbackup.model.BackupBatchStatus
 import com.example.localbackup.model.BackupFile
 import com.example.localbackup.model.BackupStatus
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
 import java.io.FileNotFoundException
 import java.util.UUID
 import kotlin.coroutines.cancellation.CancellationException
@@ -13,7 +16,9 @@ import kotlin.coroutines.cancellation.CancellationException
  * sequentially and record each outcome before moving on.
  *
  * An ordinary failure of one file is recorded as FAILED and the next file is still attempted.
- * [CancellationException] is never turned into FAILED; it propagates and stops the batch.
+ * [CancellationException] is never turned into FAILED: it stops the batch, a short
+ * non-cancellable section records the outcome (CANCELLED for [UserCancellationException],
+ * INTERRUPTED otherwise) and the exception is rethrown.
  * Operation-level problems (destination cannot be prepared, store fails) are thrown to the caller.
  */
 class CreateBackupUseCase(
@@ -21,6 +26,7 @@ class CreateBackupUseCase(
     private val destinations: BackupDestinations,
     private val copier: BackupCopier,
     private val store: BatchStore,
+    private val probe: DestinationProbe,
     private val newId: () -> String = { UUID.randomUUID().toString() },
     private val now: () -> Long = System::currentTimeMillis
 ) {
@@ -58,31 +64,87 @@ class CreateBackupUseCase(
             )
         }
 
-        for (file in files) {
-            updateFile(batchId, file.id) { it.copy(status = BackupStatus.COPYING) }
+        try {
+            for (file in files) {
+                updateFile(batchId, file.id) { it.copy(status = BackupStatus.COPYING) }
 
-            val errorMessage: String? = try {
-                copier.copy(file.sourceUri, file.destinationUri) { copied ->
-                    onProgress(FileProgress(file.id, copied))
+                val errorMessage: String? = try {
+                    copier.copy(file.sourceUri, file.destinationUri) { copied ->
+                        onProgress(FileProgress(file.id, copied))
+                    }
+                    null
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    userMessage(e)
                 }
-                null
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                userMessage(e)
+
+                // Once the copy finished (or failed), record it even if cancel arrives right now.
+                withContext(NonCancellable) {
+                    updateFile(batchId, file.id) {
+                        it.copy(
+                            status = if (errorMessage == null) BackupStatus.SUCCESS else BackupStatus.FAILED,
+                            errorMessage = errorMessage
+                        )
+                    }
+                }
             }
 
-            updateFile(batchId, file.id) {
-                it.copy(
-                    status = if (errorMessage == null) BackupStatus.SUCCESS else BackupStatus.FAILED,
-                    errorMessage = errorMessage
-                )
-            }
+            // Every file was attempted: COMPLETED even if some entries FAILED.
+            updateBatch(batchId) { it.copy(status = BackupBatchStatus.COMPLETED) }
+        } catch (e: CancellationException) {
+            withContext(NonCancellable) { recordStopped(batchId, userCancelled = e.isUserCancellation()) }
+            throw e
         }
-
-        // Every file was attempted: COMPLETED even if some entries FAILED.
-        updateBatch(batchId) { it.copy(status = BackupBatchStatus.COMPLETED) }
     }
+
+    /**
+     * Bounded cleanup after cancellation: keeps SUCCESS/FAILED, removes the active `.partial`,
+     * marks unfinished files CANCELLED (user) or INTERRUPTED (anything else). If the active file
+     * was already finalized with the expected size, it is kept as SUCCESS. If nothing was left
+     * unfinished, the batch legitimately stays/becomes COMPLETED.
+     */
+    private suspend fun recordStopped(batchId: String, userCancelled: Boolean) {
+        val current = store.latestBatch.first()?.takeIf { it.id == batchId } ?: return
+        if (current.status != BackupBatchStatus.IN_PROGRESS) return
+
+        val active = current.files.firstOrNull { it.status == BackupStatus.COPYING }
+        val activeFinalized = active != null && cleanUpAndCheckFinalized(active)
+
+        val stoppedStatus = if (userCancelled) BackupStatus.CANCELLED else BackupStatus.INTERRUPTED
+        val stoppedMessage = if (userCancelled) null else "Interrupted before completion"
+
+        updateBatch(batchId) { batch ->
+            if (batch.status != BackupBatchStatus.IN_PROGRESS) return@updateBatch batch
+            val updated = batch.files.map { file ->
+                when {
+                    file.status != BackupStatus.PENDING && file.status != BackupStatus.COPYING -> file
+                    file.id == active?.id && activeFinalized ->
+                        file.copy(status = BackupStatus.SUCCESS, errorMessage = null)
+                    else -> file.copy(status = stoppedStatus, errorMessage = stoppedMessage)
+                }
+            }
+            val anyStopped = updated.any { it.status == stoppedStatus }
+            batch.copy(
+                files = updated,
+                status = when {
+                    !anyStopped -> BackupBatchStatus.COMPLETED
+                    userCancelled -> BackupBatchStatus.CANCELLED
+                    else -> BackupBatchStatus.INTERRUPTED
+                }
+            )
+        }
+    }
+
+    /** Best effort: delete the partial, then report whether a full-size final file exists. */
+    private suspend fun cleanUpAndCheckFinalized(file: BackupFile): Boolean =
+        try {
+            probe.deletePartial(file.destinationUri)
+            val size = probe.finalizedSize(file.destinationUri)
+            size != null && file.expectedSize != null && size == file.expectedSize
+        } catch (e: Exception) {
+            false
+        }
 
     private suspend fun updateBatch(batchId: String, transform: (BackupBatch) -> BackupBatch) {
         store.update { current -> if (current?.id == batchId) transform(current) else current }

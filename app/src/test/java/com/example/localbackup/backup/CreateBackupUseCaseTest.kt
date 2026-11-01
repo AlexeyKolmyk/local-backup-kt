@@ -26,6 +26,21 @@ class CreateBackupUseCaseTest {
             "file:///backups/$batchId/${fileId}_$displayName"
     }
 
+    /** Fake file system: finalized destinations (matched by suffix) and partial deletions. */
+    private class FakeProbe(private val finalizedSuffixes: Map<String, Long> = emptyMap()) : DestinationProbe {
+        val partialDeletes = mutableListOf<String>()
+
+        override suspend fun finalizedSize(destinationUri: String): Long? =
+            finalizedSuffixes.entries.firstOrNull { destinationUri.endsWith(it.key) }?.value
+
+        override suspend fun deletePartial(destinationUri: String): Boolean {
+            partialDeletes += destinationUri
+            return true
+        }
+    }
+
+    private var probe = FakeProbe()
+
     /** Records attempts in order and the persisted status seen at the moment of each copy. */
     private class FakeCopier(
         private val store: BatchStore,
@@ -52,6 +67,7 @@ class CreateBackupUseCaseTest {
         destinations = destinations,
         copier = copier,
         store = store,
+        probe = probe,
         newId = { "id${nextId++}" },
         now = { 1_000L }
     )
@@ -89,24 +105,74 @@ class CreateBackupUseCaseTest {
         assertEquals(2, destinations.toSet().size)
     }
 
-    @Test
-    fun cancellationPropagatesAndIsNotRecordedAsFailed() = runBlocking {
-        val copier = FakeCopier(store, mapOf("content://x/B" to CancellationException("cancelled")))
-
+    private suspend fun runExpectingCancellation(copier: BackupCopier, uris: List<String>) {
         try {
-            useCase(copier)(listOf("content://x/A", "content://x/B", "content://x/C"))
+            useCase(copier)(uris)
             fail("CancellationException expected")
         } catch (expected: CancellationException) {
-            // ok
+            // ok: cancellation must propagate, not be swallowed
         }
+    }
+
+    private val abc = listOf("content://x/A", "content://x/B", "content://x/C")
+
+    @Test
+    fun userCancellationOnSecondFileRecordsCancelled() = runBlocking {
+        val copier = FakeCopier(store, mapOf("content://x/B" to UserCancellationException()))
+
+        runExpectingCancellation(copier, abc)
+
+        assertEquals(listOf("content://x/A", "content://x/B"), copier.attempted) // C never attempted
+        val batch = latest()
+        assertEquals(BackupBatchStatus.CANCELLED, batch.status)
+        assertEquals(
+            listOf(BackupStatus.SUCCESS, BackupStatus.CANCELLED, BackupStatus.CANCELLED),
+            batch.files.map { it.status }
+        )
+        assertEquals(listOf(batch.files[1].destinationUri), probe.partialDeletes) // active partial cleaned
+    }
+
+    @Test
+    fun otherCancellationIsRecordedAsInterruptedNotFailed() = runBlocking {
+        val copier = FakeCopier(store, mapOf("content://x/B" to CancellationException("screen closed")))
+
+        runExpectingCancellation(copier, abc)
 
         assertEquals(listOf("content://x/A", "content://x/B"), copier.attempted)
         val batch = latest()
-        assertEquals(BackupBatchStatus.IN_PROGRESS, batch.status)
+        assertEquals(BackupBatchStatus.INTERRUPTED, batch.status)
         assertEquals(
-            listOf(BackupStatus.SUCCESS, BackupStatus.COPYING, BackupStatus.PENDING),
+            listOf(BackupStatus.SUCCESS, BackupStatus.INTERRUPTED, BackupStatus.INTERRUPTED),
             batch.files.map { it.status }
         )
+    }
+
+    @Test
+    fun cancelRightAfterFinalizingKeepsThatFileSuccessful() = runBlocking {
+        // B was fully written and renamed, but cancellation arrived before SUCCESS was recorded.
+        probe = FakeProbe(finalizedSuffixes = mapOf("_B" to 10L))
+        val copier = FakeCopier(store, mapOf("content://x/B" to UserCancellationException()))
+
+        runExpectingCancellation(copier, abc)
+
+        val batch = latest()
+        assertEquals(
+            listOf(BackupStatus.SUCCESS, BackupStatus.SUCCESS, BackupStatus.CANCELLED),
+            batch.files.map { it.status }
+        )
+        assertEquals(BackupBatchStatus.CANCELLED, batch.status)
+    }
+
+    @Test
+    fun cancelWhenNothingIsLeftKeepsCompleted() = runBlocking {
+        probe = FakeProbe(finalizedSuffixes = mapOf("_C" to 10L))
+        val copier = FakeCopier(store, mapOf("content://x/C" to UserCancellationException()))
+
+        runExpectingCancellation(copier, abc)
+
+        val batch = latest()
+        assertEquals(List(3) { BackupStatus.SUCCESS }, batch.files.map { it.status })
+        assertEquals(BackupBatchStatus.COMPLETED, batch.status)
     }
 
     @Test

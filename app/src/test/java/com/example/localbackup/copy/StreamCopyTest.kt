@@ -1,8 +1,12 @@
 package com.example.localbackup.copy
 
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayInputStream
@@ -67,5 +71,31 @@ class StreamCopyTest {
         copyStream(ByteArrayInputStream(payload), ByteArrayOutputStream()) { lastProgress = it }
 
         assertEquals(payload.size.toLong(), lastProgress)
+    }
+
+    @Test
+    fun cancellationStopsCopyingAndIsPropagated() = runBlocking {
+        var reads = 0
+        var returnedNormally = false
+        lateinit var job: Job
+        job = launch(start = CoroutineStart.LAZY) {
+            // Endless source that requests cancellation on the first read.
+            val endless = object : InputStream() {
+                override fun read(): Int = error("single-byte read not expected")
+                override fun read(b: ByteArray, off: Int, len: Int): Int {
+                    reads++
+                    job.cancel()
+                    return len
+                }
+            }
+            copyStream(endless, ByteArrayOutputStream())
+            returnedNormally = true
+        }
+
+        job.join()
+
+        assertTrue(job.isCancelled)
+        assertFalse(returnedNormally)
+        assertEquals(1, reads)
     }
 }

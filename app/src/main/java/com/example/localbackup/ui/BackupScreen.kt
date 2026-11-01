@@ -24,6 +24,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -73,6 +74,7 @@ fun BackupScreen(
         state = state,
         onSelectFiles = { pickFiles.launch(arrayOf("*/*")) },
         onDeleteBackup = viewModel::onDeleteBackup,
+        onCancelBackup = viewModel::onCancelBackup,
         modifier = modifier
     )
 }
@@ -83,6 +85,7 @@ fun BackupContent(
     state: BackupUiState,
     onSelectFiles: () -> Unit,
     onDeleteBackup: (StoredBackup) -> Unit,
+    onCancelBackup: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     // Backup awaiting confirmation; the dialog is the only way to trigger deletion.
@@ -110,7 +113,15 @@ fun BackupContent(
             StoredBatchState.Empty -> item { EmptyState() }
             is StoredBatchState.Error -> item { ErrorCard(stored.message) }
             is StoredBatchState.Loaded -> {
-                item { SummaryCard(stored.batch, state.progress) }
+                item {
+                    SummaryCard(
+                        batch = stored.batch,
+                        progress = state.progress,
+                        showCancel = state.isRunning,
+                        isCancelling = state.isCancelling,
+                        onCancel = onCancelBackup
+                    )
+                }
                 item { FileList(stored.batch.files) }
             }
         }
@@ -302,7 +313,13 @@ private fun ErrorCard(message: String) {
 }
 
 @Composable
-private fun SummaryCard(batch: BackupBatch, progress: FileProgress?) {
+private fun SummaryCard(
+    batch: BackupBatch,
+    progress: FileProgress?,
+    showCancel: Boolean = false,
+    isCancelling: Boolean = false,
+    onCancel: () -> Unit = {}
+) {
     val total = batch.files.size
     val processed = batch.files.count { it.status.isTerminal() }
     val copying = batch.files.firstOrNull { it.status == BackupStatus.COPYING }
@@ -343,6 +360,21 @@ private fun SummaryCard(batch: BackupBatch, progress: FileProgress?) {
                 } else {
                     // Unknown size (or no progress reported yet): indeterminate.
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                }
+            }
+
+            // Cancel sits right under the progress of the running batch.
+            if (showCancel && batch.status == BackupBatchStatus.IN_PROGRESS) {
+                OutlinedButton(
+                    onClick = onCancel,
+                    enabled = !isCancelling,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        stringResource(
+                            if (isCancelling) R.string.cancelling_backup else R.string.cancel_backup
+                        )
+                    )
                 }
             }
 
@@ -490,7 +522,7 @@ private fun previewFile(id: String, name: String, status: BackupStatus, size: Lo
 @Preview(name = "Empty", showBackground = true)
 @Composable
 private fun EmptyPreview() {
-    LocalBackupTheme { BackupContent(BackupUiState(stored = StoredBatchState.Empty), onSelectFiles = {}, onDeleteBackup = {}) }
+    LocalBackupTheme { BackupContent(BackupUiState(stored = StoredBatchState.Empty), onSelectFiles = {}, onDeleteBackup = {}, onCancelBackup = {}) }
 }
 
 @Preview(name = "Copying", showBackground = true)
@@ -512,7 +544,8 @@ private fun CopyingPreview() {
                 progress = FileProgress("b", 190_000_000)
             ),
             onSelectFiles = {},
-            onDeleteBackup = {}
+            onDeleteBackup = {},
+            onCancelBackup = {}
         )
     }
 }
@@ -540,7 +573,8 @@ private fun ResultsPreview() {
                 )
             ),
             onSelectFiles = {},
-            onDeleteBackup = {}
+            onDeleteBackup = {},
+            onCancelBackup = {}
         )
     }
 }
@@ -552,7 +586,8 @@ private fun ErrorPreview() {
         BackupContent(
             BackupUiState(stored = StoredBatchState.Error("Saved backup status cannot be read (CorruptionException)")),
             onSelectFiles = {},
-            onDeleteBackup = {}
+            onDeleteBackup = {},
+            onCancelBackup = {}
         )
     }
 }

@@ -10,6 +10,7 @@ import com.example.localbackup.LocalBackupApplication
 import com.example.localbackup.backup.BatchStore
 import com.example.localbackup.backup.CreateBackupUseCase
 import com.example.localbackup.backup.FileProgress
+import com.example.localbackup.backup.UserCancellationException
 import com.example.localbackup.copy.BackupInventory
 import com.example.localbackup.copy.StoredBackup
 import com.example.localbackup.model.BackupBatch
@@ -50,7 +51,9 @@ data class BackupUiState(
     val errorMessage: String? = null,
     /** Transient, throttled progress of the file being copied; null when idle. */
     val progress: FileProgress? = null,
-    val storedBackups: StoredBackupsState = StoredBackupsState.Loading
+    val storedBackups: StoredBackupsState = StoredBackupsState.Loading,
+    /** Cancel was requested; cleanup and persistence of CANCELLED are still running. */
+    val isCancelling: Boolean = false
 ) {
     /** Deleting copies is not allowed while a batch is copying. */
     val canDeleteBackups: Boolean
@@ -78,6 +81,7 @@ class BackupViewModel(
     private val storedBackups = MutableStateFlow<StoredBackupsState>(StoredBackupsState.Loading)
     private val isReady = MutableStateFlow(false)
     private val isRunning = MutableStateFlow(false)
+    private val isCancelling = MutableStateFlow(false)
     private val errorMessage = MutableStateFlow<String?>(null)
     private val progress = MutableStateFlow<FileProgress?>(null)
 
@@ -99,6 +103,8 @@ class BackupViewModel(
             )
         }.combine(storedBackups) { state, backups ->
             state.copy(storedBackups = backups)
+        }.combine(isCancelling) { state, cancelling ->
+            state.copy(isCancelling = cancelling)
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), BackupUiState())
 
     init {
@@ -125,11 +131,21 @@ class BackupViewModel(
             } catch (e: Exception) {
                 errorMessage.value = "Backup could not be completed (${e::class.java.simpleName})"
             } finally {
+                // Runs only after the use case finished its cancellation cleanup.
                 progress.value = null
+                isCancelling.value = false
                 isRunning.value = false
                 refreshStoredBackups()
             }
         }
+    }
+
+    /** Requests cooperative cancellation of the active batch. Repeated taps are ignored. */
+    fun onCancelBackup() {
+        val job = activeJob ?: return
+        if (!isRunning.value || !job.isActive || isCancelling.value) return
+        isCancelling.value = true
+        job.cancel(UserCancellationException())
     }
 
     /**

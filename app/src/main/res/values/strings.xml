@@ -2,6 +2,8 @@
     <string name="app_name">LocalBackup</string>
     <string name="screen_title">Local Backup</string>
     <string name="select_files">Select files</string>
+    <string name="cancel_backup">Cancel backup</string>
+    <string name="cancelling_backup">Cancelling…</string>
 
     <string name="loading_saved">Checking saved backups…</string>
     <string name="empty_title">No backups yet</string>

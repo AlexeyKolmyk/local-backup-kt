@@ -41,7 +41,8 @@ class AppContainer(context: Context) {
         sources = backupFiles,
         destinations = backupFiles,
         copier = FileCopier(appContext.contentResolver),
-        store = batchStore
+        store = batchStore,
+        probe = backupFiles
     )
 
     /** Inventory of finalized copies on disk (all batches), independent of DataStore records. */
