@@ -25,7 +25,11 @@ class CreateBackupUseCase(
     private val now: () -> Long = System::currentTimeMillis
 ) {
 
-    suspend operator fun invoke(sourceUris: List<String>) {
+    /** @param onProgress transient per-chunk progress; may be called from a background thread. */
+    suspend operator fun invoke(
+        sourceUris: List<String>,
+        onProgress: (FileProgress) -> Unit = {}
+    ) {
         if (sourceUris.isEmpty()) return
 
         val batchId = newId()
@@ -58,7 +62,9 @@ class CreateBackupUseCase(
             updateFile(batchId, file.id) { it.copy(status = BackupStatus.COPYING) }
 
             val errorMessage: String? = try {
-                copier.copy(file.sourceUri, file.destinationUri)
+                copier.copy(file.sourceUri, file.destinationUri) { copied ->
+                    onProgress(FileProgress(file.id, copied))
+                }
                 null
             } catch (e: CancellationException) {
                 throw e

@@ -1,5 +1,8 @@
 package com.example.localbackup.backup
 
+/** Transient byte progress of the file currently being copied. Never persisted. */
+data class FileProgress(val fileId: String, val copiedBytes: Long)
+
 /** Provider metadata of a picked document. [size] is null when unknown. */
 data class SourceInfo(val displayName: String, val size: Long?)
 
