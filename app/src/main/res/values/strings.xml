@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">LocalBackup</string>
+    <string name="select_files">Select files</string>
+</resources>
