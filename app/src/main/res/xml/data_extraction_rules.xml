@@ -1,12 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?><!--
    Backup/transfer rules for API 31+.
-   Local backup copies can be large; keep them out of cloud backup and device transfer.
+   Local backup copies can be large; keep them (and the metadata that points to them) out of cloud backup and device transfer.
 -->
 <data-extraction-rules>
     <cloud-backup>
         <exclude domain="file" path="backups/" />
+        <exclude domain="file" path="datastore/latest_batch.json" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="file" path="backups/" />
+        <exclude domain="file" path="datastore/latest_batch.json" />
     </device-transfer>
 </data-extraction-rules>

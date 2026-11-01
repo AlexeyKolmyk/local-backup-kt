@@ -4,35 +4,34 @@ This is a **short handoff for the next AI session**, not a historical log or dup
 
 ## Current step
 
-- Step: 03 — CreateBackupUseCase and file outcomes
-- Status: Completed, developer-verified (see checks below)
-- Next: Step 04 — persist latest batch with typed DataStore (`DataStoreBatchStore`) replacing `InMemoryBatchStore` (step file to be added by the developer)
+- Step: 04 — Typed DataStore and latest batch
+- Status: Completed, developer-verified
+- Next: Step 05 — `ReconcileBackupUseCase` on startup for unfinished `IN_PROGRESS` batches (step file to be added by the developer)
 - Actual exercise time elapsed: Not recorded yet
 
 ## Implemented
 
 - Step 01: serialization setup, `model/BackupModels.kt`, basic screen.
-- Step 02: `copy/StreamCopy.kt` (`COPY_BUFFER_SIZE = 256 * 1024`), `copy/FileCopier.kt` (`.partial` -> fsync -> rename, cleanup on failure/cancellation), `copy/BackupStorage.kt` (`filesDir/backups/<batchId>/<fileId>_<safeName>`), `backups/` excluded from Auto Backup / device transfer.
-- `backup/BatchStore.kt`: `BatchStore` API (`latestBatch: Flow`, atomic `update {}`) + TEMPORARY `InMemoryBatchStore` (to be replaced in Step 04, not kept alongside).
-- `backup/BackupPorts.kt`: `BackupSources`, `BackupDestinations`, `BackupCopier`, `SourceInfo` so the use case works on URI strings and is JVM-testable.
-- `backup/CreateBackupUseCase.kt`: prepare batch dir, plan files, await initial `IN_PROGRESS` save, sequential `PENDING -> COPYING -> SUCCESS/FAILED`, path-free error messages, `CancellationException` rethrown, batch `COMPLETED` after all attempts.
-- `copy/AppPrivateBackupFiles.kt` (SAF metadata + `Uri.fromFile` destinations), `copy/SourceInfoQuery.kt`; `FileCopier` implements `BackupCopier`.
-- `ui/BackupViewModel.kt`: single active `Job`, duplicate-start guard, `BackupUiState` from store flow + running/error state. `BackupScreen` renders state only (stateless `BackupContent` + preview).
-- `LocalBackupApplication` + `AppContainer` manual wiring (registered in manifest).
-- Dependencies: `lifecycle-viewmodel-compose`, `lifecycle-runtime-compose` (lifecycle 2.11.0).
-- Tests: `StreamCopyTest` (4), `CreateBackupUseCaseTest` (4: failure on B does not stop C, cancellation propagates and is not FAILED, unique destinations for equal names, empty selection).
+- Step 02: `copy/StreamCopy.kt` (`COPY_BUFFER_SIZE = 256 * 1024`), `copy/FileCopier.kt` (`.partial` -> fsync -> rename, cleanup on failure/cancellation), `copy/BackupStorage.kt` (`filesDir/backups/<batchId>/<fileId>_<safeName>`).
+- Step 03: `backup/CreateBackupUseCase.kt` (sequential `PENDING -> COPYING -> SUCCESS/FAILED`, awaited saves, `CancellationException` rethrown, `COMPLETED` after all attempts), port interfaces in `backup/BackupPorts.kt`, `copy/AppPrivateBackupFiles.kt`, `ui/BackupViewModel.kt` (single job, duplicate-start guard), `LocalBackupApplication` + `AppContainer` manual wiring.
+- Step 04: `androidx.datastore:datastore` 1.1.7; `data/LatestBatchRecord.kt` (`LatestBatchRecord(latestBatch: BackupBatch? = null)` + JSON `LatestBatchSerializer`, malformed data -> `CorruptionException`); `data/DataStoreBatchStore.kt` (`updateData` transforms current value); single DataStore instance in `AppContainer` (`files/datastore/latest_batch.json`).
+- UI: `StoredBatchState` Loading / Empty / Loaded / Error; Select disabled while loading, running, or on read error.
+- `InMemoryBatchStore` now exists only as a test fake.
+- `backups/` and `datastore/latest_batch.json` excluded from Auto Backup / device transfer.
+- Tests: `StreamCopyTest` (4), `CreateBackupUseCaseTest` (4), `LatestBatchSerializerTest` (3: round trip with SUCCESS/FAILED, empty round trip, malformed -> `CorruptionException`).
 
 ## Developer-verified checks
 
-- Build: Succeeded after Gradle sync (developer-reported)
+- Build: Succeeded (developer-reported)
 - App launch: Launches on emulator (developer-reported)
-- Manual behavior: Files copied sequentially; Select button disabled while running; rotation mid-copy keeps copying (developer-reported)
-- Unit tests: `./gradlew testDebugUnitTest` BUILD SUCCESSFUL; `CreateBackupUseCaseTest` also passed in Android Studio (developer-reported)
+- Manual behavior: Fresh install shows Empty; batch and statuses survive force-stop/relaunch; new batch replaces previous; corrupted metadata file shows read error instead of Empty — "everything works as expected" (developer-reported)
+- Unit tests: `./gradlew testDebugUnitTest` BUILD SUCCESSFUL (developer-reported)
 
 ## Known issues / deviations
 
-- Batch results are in memory only until Step 04 (lost on process restart).
-- Added small port interfaces + `AppContainer` (manual DI) to keep the use case Android-free; no DI framework.
+- Killing the app mid-copy leaves the persisted batch `IN_PROGRESS`/`COPYING` until Step 05 reconciliation.
+- Store property named `latestBatch` (step text says `lastBatch`).
+- Corrupted metadata requires clearing app data to recover (no reset action in UI).
 - Old batch folders are not cleaned up (by design; future work).
 
 ## Before committing each step (developer only)

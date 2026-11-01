@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?><!--
    Auto Backup rules for devices older than API 31.
-   Local backup copies can be large; keep them out of Android cloud backup.
+   Local backup copies can be large; keep them (and the metadata that points to them) out of Android cloud backup.
 -->
 <full-backup-content>
     <exclude domain="file" path="backups/" />
+    <exclude domain="file" path="datastore/latest_batch.json" />
 </full-backup-content>

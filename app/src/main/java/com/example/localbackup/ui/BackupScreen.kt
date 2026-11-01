@@ -62,7 +62,7 @@ fun BackupContent(
             text = stringResource(R.string.app_name),
             style = MaterialTheme.typography.headlineMedium
         )
-        Button(onClick = onSelectFiles, enabled = !state.isRunning) {
+        Button(onClick = onSelectFiles, enabled = state.canStartBackup) {
             Text(stringResource(R.string.select_files))
         }
         if (state.isRunning) {
@@ -71,10 +71,15 @@ fun BackupContent(
         state.errorMessage?.let {
             Text(it, color = MaterialTheme.colorScheme.error)
         }
-        state.batch?.let { batch ->
-            Text("Latest batch: ${batch.status}", style = MaterialTheme.typography.titleMedium)
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(batch.files, key = { it.id }) { file -> FileRow(file) }
+        when (val stored = state.stored) {
+            StoredBatchState.Loading -> Text("Loading saved backup status…")
+            StoredBatchState.Empty -> Text("No backups yet. Select files to create one.")
+            is StoredBatchState.Error -> Text(stored.message, color = MaterialTheme.colorScheme.error)
+            is StoredBatchState.Loaded -> {
+                Text("Latest batch: ${stored.batch.status}", style = MaterialTheme.typography.titleMedium)
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(stored.batch.files, key = { it.id }) { file -> FileRow(file) }
+                }
             }
         }
     }
@@ -99,14 +104,14 @@ private fun BackupContentPreview() {
     LocalBackupTheme {
         BackupContent(
             state = BackupUiState(
-                batch = BackupBatch(
+                stored = StoredBatchState.Loaded(BackupBatch(
                     id = "b", createdAt = 0, status = BackupBatchStatus.IN_PROGRESS,
                     files = listOf(
                         file("a", BackupStatus.SUCCESS),
                         file("b", BackupStatus.FAILED, "File not found or not readable"),
                         file("c", BackupStatus.COPYING)
                     )
-                ),
+                )),
                 isRunning = true
             ),
             onSelectFiles = {}

@@ -14,20 +14,35 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlin.coroutines.cancellation.CancellationException
 
+/** What is known about the persisted latest batch. */
+sealed interface StoredBatchState {
+    data object Loading : StoredBatchState
+    data object Empty : StoredBatchState
+    data class Loaded(val batch: BackupBatch) : StoredBatchState
+    data class Error(val message: String) : StoredBatchState
+}
+
 data class BackupUiState(
-    val batch: BackupBatch? = null,
+    val stored: StoredBatchState = StoredBatchState.Loading,
     val isRunning: Boolean = false,
     val errorMessage: String? = null
-)
+) {
+    /** New backups only once the stored state is known and readable, and nothing is running. */
+    val canStartBackup: Boolean
+        get() = !isRunning && (stored is StoredBatchState.Empty || stored is StoredBatchState.Loaded)
+}
 
 /**
  * Owns the single active backup job and blocks concurrent starts.
- * The per-file loop lives in [CreateBackupUseCase], not here.
+ * The per-file loop lives in [CreateBackupUseCase]; status comes from the persisted [BatchStore].
  */
 class BackupViewModel(
     private val createBackup: CreateBackupUseCase,
@@ -38,9 +53,14 @@ class BackupViewModel(
     private val isRunning = MutableStateFlow(false)
     private val errorMessage = MutableStateFlow<String?>(null)
 
+    private val stored = batchStore.latestBatch
+        .map { batch -> if (batch == null) StoredBatchState.Empty else StoredBatchState.Loaded(batch) }
+        .onStart<StoredBatchState> { emit(StoredBatchState.Loading) }
+        .catch { e -> emit(StoredBatchState.Error("Saved backup status cannot be read (${e::class.java.simpleName})")) }
+
     val uiState: StateFlow<BackupUiState> =
-        combine(batchStore.latestBatch, isRunning, errorMessage) { batch, running, error ->
-            BackupUiState(batch = batch, isRunning = running, errorMessage = error)
+        combine(stored, isRunning, errorMessage) { storedState, running, error ->
+            BackupUiState(stored = storedState, isRunning = running, errorMessage = error)
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), BackupUiState())
 
     fun onFilesSelected(uris: List<Uri>) {
