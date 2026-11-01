@@ -2,6 +2,7 @@ package com.example.localbackup.copy
 
 import android.content.ContentResolver
 import android.net.Uri
+import com.example.localbackup.backup.BackupCopier
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -15,7 +16,17 @@ import java.io.IOException
  * it renamed to [destination]. On any failure or cancellation the partial file is removed
  * (best effort) and the exception is rethrown. Knows nothing about batches or persistence.
  */
-class FileCopier(private val contentResolver: ContentResolver) {
+class FileCopier(private val contentResolver: ContentResolver) : BackupCopier {
+
+    /** [destinationUri] must be a `file://` URI string, as produced by `Uri.fromFile`. */
+    override suspend fun copy(
+        sourceUri: String,
+        destinationUri: String,
+        onProgress: ((copiedBytes: Long) -> Unit)?
+    ): Long {
+        val path = requireNotNull(Uri.parse(destinationUri).path) { "Invalid destination" }
+        return copy(Uri.parse(sourceUri), File(path), onProgress)
+    }
 
     suspend fun copy(
         sourceUri: Uri,

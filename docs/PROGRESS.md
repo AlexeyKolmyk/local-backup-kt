@@ -4,34 +4,35 @@ This is a **short handoff for the next AI session**, not a historical log or dup
 
 ## Current step
 
-- Step: 02 — Native picker and real buffered copy
-- Status: Completed, developer-verified
-- Next: Step 03 — `CreateBackupUseCase` + `BackupViewModel`; move the temporary copy loop out of `BackupScreen` (step file to be added by the developer)
+- Step: 03 — CreateBackupUseCase and file outcomes
+- Status: Completed, developer-verified (see checks below)
+- Next: Step 04 — persist latest batch with typed DataStore (`DataStoreBatchStore`) replacing `InMemoryBatchStore` (step file to be added by the developer)
 - Actual exercise time elapsed: Not recorded yet
 
 ## Implemented
 
-- Step 01: serialization setup, `model/BackupModels.kt`, basic `BackupScreen`.
-- `copy/StreamCopy.kt`: `COPY_BUFFER_SIZE = 256 * 1024`, framework-free `copyStream()` with `ensureActive()` before each read and optional progress callback.
-- `copy/FileCopier.kt`: one-file copy on `Dispatchers.IO` via `<dest>.partial` -> fsync/close -> rename; partial deleted on any failure/cancellation, exception rethrown.
-- `copy/SourceDocument.kt`: `DISPLAY_NAME` / nullable `SIZE` query with fallbacks.
-- `copy/BackupStorage.kt`: `filesDir/backups/<batchId>/<fileId>_<safeName>`.
-- `BackupScreen`: `OpenMultipleDocuments` (`*/*`) + TEMPORARY sequential loop in `rememberCoroutineScope` showing OK/FAILED per file (to be replaced in Step 03; rotation mid-copy cancels it).
-- `kotlinx-coroutines-android` 1.10.2 added.
-- `backups/` excluded from Auto Backup / device transfer (`backup_rules.xml`, `data_extraction_rules.xml`).
-- JVM tests `StreamCopyTest`: byte equality (~1 MiB, multi-chunk), max read request <= `COPY_BUFFER_SIZE`, empty source, final progress value.
+- Step 01: serialization setup, `model/BackupModels.kt`, basic screen.
+- Step 02: `copy/StreamCopy.kt` (`COPY_BUFFER_SIZE = 256 * 1024`), `copy/FileCopier.kt` (`.partial` -> fsync -> rename, cleanup on failure/cancellation), `copy/BackupStorage.kt` (`filesDir/backups/<batchId>/<fileId>_<safeName>`), `backups/` excluded from Auto Backup / device transfer.
+- `backup/BatchStore.kt`: `BatchStore` API (`latestBatch: Flow`, atomic `update {}`) + TEMPORARY `InMemoryBatchStore` (to be replaced in Step 04, not kept alongside).
+- `backup/BackupPorts.kt`: `BackupSources`, `BackupDestinations`, `BackupCopier`, `SourceInfo` so the use case works on URI strings and is JVM-testable.
+- `backup/CreateBackupUseCase.kt`: prepare batch dir, plan files, await initial `IN_PROGRESS` save, sequential `PENDING -> COPYING -> SUCCESS/FAILED`, path-free error messages, `CancellationException` rethrown, batch `COMPLETED` after all attempts.
+- `copy/AppPrivateBackupFiles.kt` (SAF metadata + `Uri.fromFile` destinations), `copy/SourceInfoQuery.kt`; `FileCopier` implements `BackupCopier`.
+- `ui/BackupViewModel.kt`: single active `Job`, duplicate-start guard, `BackupUiState` from store flow + running/error state. `BackupScreen` renders state only (stateless `BackupContent` + preview).
+- `LocalBackupApplication` + `AppContainer` manual wiring (registered in manifest).
+- Dependencies: `lifecycle-viewmodel-compose`, `lifecycle-runtime-compose` (lifecycle 2.11.0).
+- Tests: `StreamCopyTest` (4), `CreateBackupUseCaseTest` (4: failure on B does not stop C, cancellation propagates and is not FAILED, unique destinations for equal names, empty selection).
 
 ## Developer-verified checks
 
-- Build: Succeeded (developer-reported)
+- Build: Succeeded after Gradle sync (developer-reported)
 - App launch: Launches on emulator (developer-reported)
-- Manual behavior: Multi-select of 3 files (pdf 24 MB, mp4 227 MB, bin 472 MB) and single-file runs (jpg, pdf) copied; SHA-256 of all 8 backups matches the originals in `/sdcard/Download`; no `.partial` files left (developer-reported `adb` output)
-- UI responsiveness during large copy: copy was fast; progress shown; not explicitly stress-checked
-- Unit tests: `./gradlew testDebugUnitTest` passed (developer-reported)
+- Manual behavior: Files copied sequentially; Select button disabled while running; rotation mid-copy keeps copying (developer-reported)
+- Unit tests: `./gradlew testDebugUnitTest` BUILD SUCCESSFUL; `CreateBackupUseCaseTest` also passed in Android Studio (developer-reported)
 
 ## Known issues / deviations
 
-- Temporary copy loop lives in the UI layer until Step 03.
+- Batch results are in memory only until Step 04 (lost on process restart).
+- Added small port interfaces + `AppContainer` (manual DI) to keep the use case Android-free; no DI framework.
 - Old batch folders are not cleaned up (by design; future work).
 
 ## Before committing each step (developer only)

@@ -7,8 +7,10 @@ import java.io.IOException
 class BackupStorage(private val filesDir: File) {
 
     /** Creates (if needed) and returns the directory for [batchId]. */
+    fun batchDir(batchId: String): File = File(File(filesDir, BACKUPS_DIR), batchId)
+
     fun prepareBatchDir(batchId: String): File {
-        val dir = File(File(filesDir, BACKUPS_DIR), batchId)
+        val dir = batchDir(batchId)
         if (!dir.isDirectory && !dir.mkdirs()) {
             throw IOException("Cannot create backup folder")
         }

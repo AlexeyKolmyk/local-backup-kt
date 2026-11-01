@@ -1,12 +1,11 @@
 package com.example.localbackup.ui
 
-import android.content.Context
-import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -16,49 +15,43 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.localbackup.R
-import com.example.localbackup.copy.BackupStorage
-import com.example.localbackup.copy.FileCopier
-import com.example.localbackup.copy.querySourceDocument
+import com.example.localbackup.model.BackupBatch
+import com.example.localbackup.model.BackupBatchStatus
+import com.example.localbackup.model.BackupFile
+import com.example.localbackup.model.BackupStatus
 import com.example.localbackup.ui.theme.LocalBackupTheme
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import java.util.UUID
 
 @Composable
-fun BackupScreen(modifier: Modifier = Modifier) {
-    val context = LocalContext.current.applicationContext
-    val scope = rememberCoroutineScope()
-    var isCopying by remember { mutableStateOf(false) }
-    val results = remember { mutableStateListOf<String>() }
-
+fun BackupScreen(
+    modifier: Modifier = Modifier,
+    viewModel: BackupViewModel = viewModel(factory = BackupViewModel.Factory)
+) {
+    val state by viewModel.uiState.collectAsStateWithLifecycle()
     val pickFiles = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments()
-    ) { uris ->
-        if (uris.isEmpty() || isCopying) return@rememberLauncherForActivityResult
-        isCopying = true
-        results.clear()
-        scope.launch {
-            try {
-                temporaryCopyAll(context, uris) { line -> results += line }
-            } finally {
-                isCopying = false
-            }
-        }
-    }
+    ) { uris -> viewModel.onFilesSelected(uris) }
 
+    BackupContent(
+        state = state,
+        onSelectFiles = { pickFiles.launch(arrayOf("*/*")) },
+        modifier = modifier
+    )
+}
+
+/** Stateless rendering only; no file I/O. */
+@Composable
+fun BackupContent(
+    state: BackupUiState,
+    onSelectFiles: () -> Unit,
+    modifier: Modifier = Modifier
+) {
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -69,57 +62,54 @@ fun BackupScreen(modifier: Modifier = Modifier) {
             text = stringResource(R.string.app_name),
             style = MaterialTheme.typography.headlineMedium
         )
-        Button(
-            onClick = { pickFiles.launch(arrayOf("*/*")) },
-            enabled = !isCopying
-        ) {
+        Button(onClick = onSelectFiles, enabled = !state.isRunning) {
             Text(stringResource(R.string.select_files))
         }
-        if (isCopying) {
-            LinearProgressIndicator()
+        if (state.isRunning) {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
         }
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(results) { line -> Text(line) }
+        state.errorMessage?.let {
+            Text(it, color = MaterialTheme.colorScheme.error)
+        }
+        state.batch?.let { batch ->
+            Text("Latest batch: ${batch.status}", style = MaterialTheme.typography.titleMedium)
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(batch.files, key = { it.id }) { file -> FileRow(file) }
+            }
         }
     }
 }
 
-/**
- * TEMPORARY Step 02 wiring: sequential loop over picked files so the copier can be tried on a
- * device. Step 03 moves this sequence into CreateBackupUseCase and out of the UI.
- */
-private suspend fun temporaryCopyAll(
-    context: Context,
-    uris: List<Uri>,
-    report: (String) -> Unit
-) {
-    val storage = BackupStorage(context.filesDir)
-    val copier = FileCopier(context.contentResolver)
-    val batchDir = try {
-        withContext(Dispatchers.IO) { storage.prepareBatchDir(UUID.randomUUID().toString()) }
-    } catch (e: Exception) {
-        report("Cannot start backup: ${e.message}")
-        return
-    }
-    for (uri in uris) {
-        val document = withContext(Dispatchers.IO) { context.contentResolver.querySourceDocument(uri) }
-        val destination = storage.destinationFile(batchDir, UUID.randomUUID().toString(), document.displayName)
-        try {
-            val copied = copier.copy(uri, destination)
-            val expected = document.size?.let { " of $it" } ?: ""
-            report("OK  ${document.displayName}: $copied$expected bytes")
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            report("FAILED  ${document.displayName}: ${e.message ?: e::class.java.simpleName}")
+@Composable
+private fun FileRow(file: BackupFile) {
+    Column {
+        Text(file.name, style = MaterialTheme.typography.bodyLarge)
+        Text(file.status.name, style = MaterialTheme.typography.labelMedium)
+        file.errorMessage?.let {
+            Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
         }
     }
 }
 
 @Preview(showBackground = true)
 @Composable
-private fun BackupScreenPreview() {
+private fun BackupContentPreview() {
+    fun file(id: String, status: BackupStatus, error: String? = null) =
+        BackupFile(id, "$id.pdf", "content://x/$id", "file:///x/$id", 1024, status, error)
     LocalBackupTheme {
-        BackupScreen()
+        BackupContent(
+            state = BackupUiState(
+                batch = BackupBatch(
+                    id = "b", createdAt = 0, status = BackupBatchStatus.IN_PROGRESS,
+                    files = listOf(
+                        file("a", BackupStatus.SUCCESS),
+                        file("b", BackupStatus.FAILED, "File not found or not readable"),
+                        file("c", BackupStatus.COPYING)
+                    )
+                ),
+                isRunning = true
+            ),
+            onSelectFiles = {}
+        )
     }
 }

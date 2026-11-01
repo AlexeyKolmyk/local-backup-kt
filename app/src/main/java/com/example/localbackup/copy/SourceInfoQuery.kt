@@ -3,20 +3,14 @@ package com.example.localbackup.copy
 import android.content.ContentResolver
 import android.net.Uri
 import android.provider.OpenableColumns
-
-/** Provider metadata of a picked document. [size] is null when the provider does not know it. */
-data class SourceDocument(
-    val uri: Uri,
-    val displayName: String,
-    val size: Long?
-)
+import com.example.localbackup.backup.SourceInfo
 
 /**
  * Reads display name and size via [OpenableColumns]. Never throws for missing metadata:
  * falls back to the last URI segment (or a generic name) and a null size.
  * Call off the main thread.
  */
-fun ContentResolver.querySourceDocument(uri: Uri): SourceDocument {
+fun ContentResolver.querySourceInfo(uri: Uri): SourceInfo {
     var name: String? = null
     var size: Long? = null
     runCatching {
@@ -30,8 +24,7 @@ fun ContentResolver.querySourceDocument(uri: Uri): SourceDocument {
                 }
             }
     }
-    return SourceDocument(
-        uri = uri,
+    return SourceInfo(
         displayName = name?.takeIf { it.isNotBlank() } ?: uri.lastPathSegment ?: "file",
         size = size
     )
