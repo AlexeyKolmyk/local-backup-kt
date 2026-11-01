@@ -8,6 +8,8 @@ import com.example.localbackup.backup.BatchStore
 import com.example.localbackup.backup.CreateBackupUseCase
 import com.example.localbackup.backup.ReconcileBackupUseCase
 import com.example.localbackup.copy.AppPrivateBackupFiles
+import com.example.localbackup.copy.BackupInventory
+import com.example.localbackup.copy.BackupStorage
 import com.example.localbackup.copy.FileCopier
 import com.example.localbackup.data.DataStoreBatchStore
 import com.example.localbackup.data.LatestBatchSerializer
@@ -16,6 +18,7 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import java.io.File
 
 class LocalBackupApplication : Application() {
     /** Manual dependency wiring; one instance per process. */
@@ -40,6 +43,9 @@ class AppContainer(context: Context) {
         copier = FileCopier(appContext.contentResolver),
         store = batchStore
     )
+
+    /** Inventory of finalized copies on disk (all batches), independent of DataStore records. */
+    val backupInventory = BackupInventory(File(appContext.filesDir, BackupStorage.BACKUPS_DIR))
 
     /** Process-lifetime scope for one-off app work (startup reconciliation). */
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)

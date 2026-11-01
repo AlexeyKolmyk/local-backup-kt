@@ -10,8 +10,11 @@ import com.example.localbackup.LocalBackupApplication
 import com.example.localbackup.backup.BatchStore
 import com.example.localbackup.backup.CreateBackupUseCase
 import com.example.localbackup.backup.FileProgress
+import com.example.localbackup.copy.BackupInventory
+import com.example.localbackup.copy.StoredBackup
 import com.example.localbackup.model.BackupBatch
 import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -22,6 +25,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.coroutines.cancellation.CancellationException
 
 /** What is known about the persisted latest batch. */
@@ -32,14 +36,26 @@ sealed interface StoredBatchState {
     data class Error(val message: String) : StoredBatchState
 }
 
+/** Physically stored copies on disk (all batches). Independent of the latest-batch record. */
+sealed interface StoredBackupsState {
+    data object Loading : StoredBackupsState
+    data class Loaded(val backups: List<StoredBackup>) : StoredBackupsState
+    data class Error(val message: String) : StoredBackupsState
+}
+
 data class BackupUiState(
     /** Loading until startup reconciliation has finished, so a stale IN_PROGRESS is never shown. */
     val stored: StoredBatchState = StoredBatchState.Loading,
     val isRunning: Boolean = false,
     val errorMessage: String? = null,
     /** Transient, throttled progress of the file being copied; null when idle. */
-    val progress: FileProgress? = null
+    val progress: FileProgress? = null,
+    val storedBackups: StoredBackupsState = StoredBackupsState.Loading
 ) {
+    /** Deleting copies is not allowed while a batch is copying. */
+    val canDeleteBackups: Boolean
+        get() = !isRunning
+
     /** New backups only once the stored state is known and readable, and nothing is running. */
     val canStartBackup: Boolean
         get() = !isRunning && (stored is StoredBatchState.Empty || stored is StoredBatchState.Loaded)
@@ -53,10 +69,13 @@ data class BackupUiState(
 class BackupViewModel(
     private val createBackup: CreateBackupUseCase,
     batchStore: BatchStore,
-    startupReconciliation: Deferred<Result<Unit>>
+    startupReconciliation: Deferred<Result<Unit>>,
+    private val inventory: BackupInventory
 ) : ViewModel() {
 
     private var activeJob: Job? = null
+    private var deleteJob: Job? = null
+    private val storedBackups = MutableStateFlow<StoredBackupsState>(StoredBackupsState.Loading)
     private val isReady = MutableStateFlow(false)
     private val isRunning = MutableStateFlow(false)
     private val errorMessage = MutableStateFlow<String?>(null)
@@ -78,6 +97,8 @@ class BackupViewModel(
                 errorMessage = error,
                 progress = fileProgress
             )
+        }.combine(storedBackups) { state, backups ->
+            state.copy(storedBackups = backups)
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), BackupUiState())
 
     init {
@@ -86,12 +107,13 @@ class BackupViewModel(
                 errorMessage.value = "Previous backup could not be checked (${e::class.java.simpleName})"
             }
             isReady.value = true
+            refreshStoredBackups() // after reconciliation removed leftover partials
         }
     }
 
     fun onFilesSelected(uris: List<Uri>) {
         if (uris.isEmpty() || !isReady.value) return
-        if (activeJob?.isActive == true) return // duplicate-start guard
+        if (activeJob?.isActive == true || deleteJob?.isActive == true) return // duplicate-start guard
 
         errorMessage.value = null
         isRunning.value = true
@@ -105,6 +127,41 @@ class BackupViewModel(
             } finally {
                 progress.value = null
                 isRunning.value = false
+                refreshStoredBackups()
+            }
+        }
+    }
+
+    /**
+     * Deletes one app-owned copy (never the source). Guarded here as well as in the UI:
+     * refused while a batch is copying, to avoid racing the copier.
+     */
+    fun onDeleteBackup(backup: StoredBackup) {
+        if (activeJob?.isActive == true || deleteJob?.isActive == true) {
+            errorMessage.value = "Backups cannot be deleted while a backup is running"
+            return
+        }
+        errorMessage.value = null
+        deleteJob = viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) { inventory.delete(backup.id) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                errorMessage.value = "Could not delete ${backup.displayName}"
+            }
+            refreshStoredBackups()
+        }
+    }
+
+    private fun refreshStoredBackups() {
+        viewModelScope.launch {
+            storedBackups.value = try {
+                StoredBackupsState.Loaded(withContext(Dispatchers.IO) { inventory.list() })
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                StoredBackupsState.Error("Stored backups cannot be listed (${e::class.java.simpleName})")
             }
         }
     }
@@ -125,7 +182,12 @@ class BackupViewModel(
         val Factory = viewModelFactory {
             initializer {
                 val container = (this[APPLICATION_KEY] as LocalBackupApplication).container
-                BackupViewModel(container.createBackup, container.batchStore, container.startupReconciliation)
+                BackupViewModel(
+                    createBackup = container.createBackup,
+                    batchStore = container.batchStore,
+                    startupReconciliation = container.startupReconciliation,
+                    inventory = container.backupInventory
+                )
             }
         }
     }

@@ -16,17 +16,22 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -41,6 +46,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.localbackup.R
 import com.example.localbackup.backup.FileProgress
+import com.example.localbackup.copy.StoredBackup
 import com.example.localbackup.model.BackupBatch
 import com.example.localbackup.model.BackupBatchStatus
 import com.example.localbackup.model.BackupFile
@@ -66,6 +72,7 @@ fun BackupScreen(
     BackupContent(
         state = state,
         onSelectFiles = { pickFiles.launch(arrayOf("*/*")) },
+        onDeleteBackup = viewModel::onDeleteBackup,
         modifier = modifier
     )
 }
@@ -75,8 +82,12 @@ fun BackupScreen(
 fun BackupContent(
     state: BackupUiState,
     onSelectFiles: () -> Unit,
+    onDeleteBackup: (StoredBackup) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    // Backup awaiting confirmation; the dialog is the only way to trigger deletion.
+    var pendingDelete by remember { mutableStateOf<StoredBackup?>(null) }
+
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -103,7 +114,121 @@ fun BackupContent(
                 item { FileList(stored.batch.files) }
             }
         }
+
+        item {
+            StoredBackupsSection(
+                state = state.storedBackups,
+                deleteEnabled = state.canDeleteBackups,
+                onDeleteRequest = { pendingDelete = it }
+            )
+        }
     }
+
+    pendingDelete?.let { backup ->
+        DeleteBackupDialog(
+            backup = backup,
+            onConfirm = {
+                pendingDelete = null
+                onDeleteBackup(backup)
+            },
+            onDismiss = { pendingDelete = null }
+        )
+    }
+}
+
+@Composable
+private fun StoredBackupsSection(
+    state: StoredBackupsState,
+    deleteEnabled: Boolean,
+    onDeleteRequest: (StoredBackup) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(stringResource(R.string.stored_title), style = MaterialTheme.typography.titleMedium)
+        when (state) {
+            StoredBackupsState.Loading -> Text(
+                stringResource(R.string.stored_loading),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            is StoredBackupsState.Error -> ErrorCard(state.message)
+            is StoredBackupsState.Loaded -> if (state.backups.isEmpty()) {
+                Text(
+                    stringResource(R.string.stored_empty),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                Column {
+                    state.backups.forEachIndexed { index, backup ->
+                        if (index > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        StoredBackupRow(backup, deleteEnabled, onDeleteRequest)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StoredBackupRow(
+    backup: StoredBackup,
+    deleteEnabled: Boolean,
+    onDeleteRequest: (StoredBackup) -> Unit
+) {
+    val context = LocalContext.current
+    val size = Formatter.formatShortFileSize(context, backup.sizeBytes)
+    val date = remember(backup.lastModified) {
+        DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(backup.lastModified))
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                backup.displayName,
+                style = MaterialTheme.typography.bodyLarge,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                stringResource(R.string.stored_item_details, size, date),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        IconButton(onClick = { onDeleteRequest(backup) }, enabled = deleteEnabled) {
+            Icon(
+                painter = painterResource(R.drawable.ic_delete),
+                contentDescription = stringResource(R.string.delete_backup_description, backup.displayName)
+            )
+        }
+    }
+}
+
+@Composable
+private fun DeleteBackupDialog(
+    backup: StoredBackup,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val size = Formatter.formatShortFileSize(LocalContext.current, backup.sizeBytes)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.delete_dialog_title)) },
+        text = { Text(stringResource(R.string.delete_dialog_text, backup.displayName, size)) },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text(stringResource(R.string.delete_confirm), color = MaterialTheme.colorScheme.error)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.delete_dismiss)) }
+        }
+    )
 }
 
 @Composable
@@ -365,7 +490,7 @@ private fun previewFile(id: String, name: String, status: BackupStatus, size: Lo
 @Preview(name = "Empty", showBackground = true)
 @Composable
 private fun EmptyPreview() {
-    LocalBackupTheme { BackupContent(BackupUiState(stored = StoredBatchState.Empty), onSelectFiles = {}) }
+    LocalBackupTheme { BackupContent(BackupUiState(stored = StoredBatchState.Empty), onSelectFiles = {}, onDeleteBackup = {}) }
 }
 
 @Preview(name = "Copying", showBackground = true)
@@ -386,7 +511,8 @@ private fun CopyingPreview() {
                 isRunning = true,
                 progress = FileProgress("b", 190_000_000)
             ),
-            onSelectFiles = {}
+            onSelectFiles = {},
+            onDeleteBackup = {}
         )
     }
 }
@@ -405,9 +531,16 @@ private fun ResultsPreview() {
                             previewFile("c", "share.mp4", BackupStatus.INTERRUPTED, 226_650_109, "Interrupted before completion")
                         )
                     )
+                ),
+                storedBackups = StoredBackupsState.Loaded(
+                    listOf(
+                        StoredBackup("b1/x_docs_ukr.pdf", "b1", "docs_ukr.pdf", 24_383_904, 1_700_000_000_000),
+                        StoredBackup("b0/y_share.mp4", "b0", "share.mp4", 226_650_109, 1_699_000_000_000)
+                    )
                 )
             ),
-            onSelectFiles = {}
+            onSelectFiles = {},
+            onDeleteBackup = {}
         )
     }
 }
@@ -418,7 +551,8 @@ private fun ErrorPreview() {
     LocalBackupTheme {
         BackupContent(
             BackupUiState(stored = StoredBatchState.Error("Saved backup status cannot be read (CorruptionException)")),
-            onSelectFiles = {}
+            onSelectFiles = {},
+            onDeleteBackup = {}
         )
     }
 }
