@@ -4,10 +4,10 @@ This is a **short handoff for the next AI session**, not a historical log or dup
 
 ## Current step
 
-- Step: 08 — Cooperative backup cancellation (optional step, implemented)
-- Status: Completed, developer-verified (see checks)
-- Next: Write user-facing `README.md` (verified capabilities, limitations, actual time, AI-assistance disclosure) and wrap up
-- Actual exercise time elapsed: Not recorded yet
+- Step: 09 — Verify, document, submit
+- Status: Completed. All steps 01–08 implemented; README written; final clean build + tests passed (developer-reported)
+- Next: Developer commits README, step 09 file and this progress update; submission done
+- Actual exercise time elapsed: about 3 hours (initial commit 14:14 CET to final docs commit; developer-confirmed)
 
 ## Implemented
 
@@ -31,6 +31,7 @@ This is a **short handoff for the next AI session**, not a historical log or dup
 - Manual behavior (Step 06): Results screens verified by screenshots.
 - Manual behavior (Step 05): force-stop mid-batch -> unfinished INTERRUPTED, earlier SUCCESS preserved, no `.partial`.
 - Unit tests: `./gradlew testDebugUnitTest` passed (developer-reported)
+- Final (Step 09): `./gradlew clean assembleDebug testDebugUnitTest` BUILD SUCCESSFUL (developer-reported; harmless "Unable to strip libandroidx.graphics.path.so, libdatastore_shared_counter.so" info). README AI-assistance disclosure confirmed by developer.
 
 ## Known issues / deviations
 
